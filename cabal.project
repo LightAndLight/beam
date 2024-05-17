@@ -2,4 +2,5 @@ packages:
   beam-core
   beam-migrate
   beam-postgres
+  beam-postgres-trans
   beam-sqlite
