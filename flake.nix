@@ -19,11 +19,12 @@
           basePackages = pkgs.haskell.packages.ghc98;
 
           packages = {
-            testcontainers.source = inputs.testcontainers;
+             testcontainers.source = inputs.testcontainers;
           };
           settings = {
             testcontainers.check = false;
             beam-postgres.check = false;
+            beam-postgres-trans.check = false;
           };
 
           devShell = {

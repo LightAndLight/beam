@@ -3,6 +3,7 @@ packages:
   beam-migrate
   beam-postgres
   beam-postgres/examples
+  beam-postgres-trans
   beam-sqlite
 
 -- Required to build testcontainers with ghc-9.10+
