@@ -22,7 +22,7 @@ library
                       beam-migrate         >=0.5  && <0.6,
                       beam-postgres,
 
-                      postgresql-libpq     >=0.8  && <0.10,
+                      postgresql-libpq     >=0.8  && <0.12,
                       postgresql-simple    >=0.5  && <0.8,
 
                       text                 >=1.0  && <2.1,
