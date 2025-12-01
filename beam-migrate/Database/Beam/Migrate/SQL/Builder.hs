@@ -13,9 +13,6 @@ import           Control.Applicative
 
 import           Data.ByteString.Builder (Builder, byteString, toLazyByteString)
 import qualified Data.ByteString.Lazy.Char8 as BCL
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
 
 
 -- | Options for @CREATE TABLE@. Given as a separate ADT because the options may
@@ -27,6 +24,13 @@ data SqlSyntaxBuilderCreateTableOptions
         SqlSyntaxBuilder
         SqlSyntaxBuilder
     deriving Eq
+
+instance IsSql92DdlSchemaCommandSyntax SqlSyntaxBuilder where
+  type Sql92DdlCommandCreateSchemaSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
+  type Sql92DdlCommandDropSchemaSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
+
+  createSchemaCmd = id
+  dropSchemaCmd = id
 
 instance IsSql92DdlCommandSyntax SqlSyntaxBuilder where
   type Sql92DdlCommandCreateTableSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
@@ -77,6 +81,18 @@ instance IsSql92AlterColumnActionSyntax SqlSyntaxBuilder where
   setNotNullSyntax = SqlSyntaxBuilder (byteString "SET NOT NULL")
   setNullSyntax = SqlSyntaxBuilder (byteString "DROP NOT NULL")
 
+instance IsSql92CreateSchemaSyntax SqlSyntaxBuilder where
+  type Sql92CreateSchemaSchemaNameSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
+  createSchemaSyntax schName = 
+      SqlSyntaxBuilder $
+        byteString "CREATE SCHEMA " <> buildSql schName
+
+instance IsSql92DropSchemaSyntax SqlSyntaxBuilder where
+  type Sql92DropSchemaSchemaNameSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
+  dropSchemaSyntax schName = 
+      SqlSyntaxBuilder $
+        byteString "DROP SCHEMA " <> buildSql schName
+
 instance IsSql92CreateTableSyntax SqlSyntaxBuilder where
   type Sql92CreateTableTableNameSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
   type Sql92CreateTableColumnSchemaSyntax SqlSyntaxBuilder = SqlSyntaxBuilder
@@ -123,14 +139,13 @@ data SqlConstraintAttributesBuilder
   deriving (Show, Eq)
 
 instance Semigroup SqlConstraintAttributesBuilder where
-  (<>) = mappend
-
-instance Monoid SqlConstraintAttributesBuilder where
-  mempty = SqlConstraintAttributesBuilder Nothing Nothing
-  mappend a b =
+  a <> b =
     SqlConstraintAttributesBuilder
       (_sqlConstraintAttributeTiming b <|> _sqlConstraintAttributeTiming a)
       (_sqlConstraintAttributeDeferrable b <|> _sqlConstraintAttributeDeferrable a)
+
+instance Monoid SqlConstraintAttributesBuilder where
+  mempty = SqlConstraintAttributesBuilder Nothing Nothing
 
 -- | Convert a 'SqlConstraintAttributesBuilder' to its @SQL92@ representation in
 -- the returned 'ByteString' 'Builder'.

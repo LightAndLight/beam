@@ -12,6 +12,7 @@ import Database.Beam.Backend.SQL.SQL92
 
 import Data.Aeson (Value)
 import Data.Hashable
+import Data.Kind (Type)
 import Data.Text (Text)
 import Data.Typeable
 #if ! MIN_VERSION_base(4,11,0)
@@ -29,6 +30,15 @@ type Sql92SaneDdlCommandSyntax cmd =
   , Sql92ColumnSchemaExpressionSyntax (Sql92DdlCommandColumnSchemaSyntax cmd) ~
       Sql92ExpressionSyntax cmd )
 
+-- | Syntax equalities that any reasonable DDL syntax with schema support would follow,
+-- including equalities between beam-migrate and beam-core types.
+type Sql92SaneDdlSchemaCommandSyntax cmd =
+  ( Sql92SaneDdlSchemaCommandSyntaxMigrateOnly cmd
+  , Sql92ExpressionCastTargetSyntax (Sql92ExpressionSyntax cmd) ~
+      Sql92DdlCommandDataTypeSyntax cmd
+  , Sql92ColumnSchemaExpressionSyntax (Sql92DdlCommandColumnSchemaSyntax cmd) ~
+      Sql92ExpressionSyntax cmd )
+
 -- | Syntax equalities for any reasonable DDL syntax, only including
 -- types defined here.
 type Sql92SaneDdlCommandSyntaxMigrateOnly cmd =
@@ -39,6 +49,13 @@ type Sql92SaneDdlCommandSyntaxMigrateOnly cmd =
   , Sql92AlterTableColumnSchemaSyntax
       (Sql92AlterTableAlterTableActionSyntax (Sql92DdlCommandAlterTableSyntax cmd)) ~
       Sql92CreateTableColumnSchemaSyntax (Sql92DdlCommandCreateTableSyntax cmd)
+  )
+
+-- | Syntax equalities for any reasonable DDL syntax, only including
+-- types defined here.
+type Sql92SaneDdlSchemaCommandSyntaxMigrateOnly cmd =
+  ( Sql92SaneDdlCommandSyntaxMigrateOnly cmd
+  , IsSql92DdlSchemaCommandSyntax cmd
   )
 
 type Sql92DdlCommandDataTypeSyntax syntax =
@@ -59,27 +76,54 @@ type Sql92DdlCommandConstraintAttributesSyntax syntax =
 type Sql92DdlCommandAlterTableActionSyntax syntax =
   Sql92AlterTableAlterTableActionSyntax (Sql92DdlCommandAlterTableSyntax syntax)
 
+-- Creation/deletion of schemas isn't supported by all backends (e.g. sqlite)
+-- and therefore is considered separately from other DDL commands such as CREATE TABLE
+class ( IsSql92CreateSchemaSyntax (Sql92DdlCommandCreateSchemaSyntax syntax)
+      , IsSql92DropSchemaSyntax (Sql92DdlCommandDropSchemaSyntax syntax)) =>
+  IsSql92DdlSchemaCommandSyntax syntax where
+  type Sql92DdlCommandCreateSchemaSyntax syntax :: Type
+  type Sql92DdlCommandDropSchemaSyntax syntax :: Type
+
+  createSchemaCmd :: Sql92DdlCommandCreateSchemaSyntax syntax -> syntax
+  dropSchemaCmd   :: Sql92DdlCommandDropSchemaSyntax syntax -> syntax
+
 class ( IsSql92CreateTableSyntax (Sql92DdlCommandCreateTableSyntax syntax)
       , IsSql92DropTableSyntax (Sql92DdlCommandDropTableSyntax syntax)
       , IsSql92AlterTableSyntax (Sql92DdlCommandAlterTableSyntax syntax)) =>
   IsSql92DdlCommandSyntax syntax where
-  type Sql92DdlCommandCreateTableSyntax syntax :: *
-  type Sql92DdlCommandAlterTableSyntax syntax :: *
-  type Sql92DdlCommandDropTableSyntax syntax :: *
+  type Sql92DdlCommandCreateTableSyntax syntax :: Type
+  type Sql92DdlCommandAlterTableSyntax syntax :: Type
+  type Sql92DdlCommandDropTableSyntax syntax :: Type
 
-  createTableCmd :: Sql92DdlCommandCreateTableSyntax syntax -> syntax
-  dropTableCmd   :: Sql92DdlCommandDropTableSyntax syntax -> syntax
-  alterTableCmd  :: Sql92DdlCommandAlterTableSyntax syntax -> syntax
+  createTableCmd  :: Sql92DdlCommandCreateTableSyntax syntax -> syntax
+  dropTableCmd    :: Sql92DdlCommandDropTableSyntax syntax -> syntax
+  alterTableCmd   :: Sql92DdlCommandAlterTableSyntax syntax -> syntax
+
+class IsSql92SchemaNameSyntax (Sql92CreateSchemaSchemaNameSyntax syntax) => 
+    IsSql92CreateSchemaSyntax syntax where
+  
+  type Sql92CreateSchemaSchemaNameSyntax syntax :: Type
+
+  createSchemaSyntax :: Sql92CreateSchemaSchemaNameSyntax syntax
+                     -> syntax
+
+class IsSql92SchemaNameSyntax (Sql92DropSchemaSchemaNameSyntax syntax) => 
+    IsSql92DropSchemaSyntax syntax where
+  
+  type Sql92DropSchemaSchemaNameSyntax syntax :: Type
+
+  dropSchemaSyntax :: Sql92DropSchemaSchemaNameSyntax syntax
+                   -> syntax
 
 class ( IsSql92TableConstraintSyntax (Sql92CreateTableTableConstraintSyntax syntax)
       , IsSql92ColumnSchemaSyntax (Sql92CreateTableColumnSchemaSyntax syntax)
       , IsSql92TableNameSyntax (Sql92CreateTableTableNameSyntax syntax) ) =>
     IsSql92CreateTableSyntax syntax where
 
-  type Sql92CreateTableTableNameSyntax syntax :: *
-  type Sql92CreateTableColumnSchemaSyntax syntax :: *
-  type Sql92CreateTableTableConstraintSyntax syntax :: *
-  type Sql92CreateTableOptionsSyntax syntax :: *
+  type Sql92CreateTableTableNameSyntax syntax :: Type
+  type Sql92CreateTableColumnSchemaSyntax syntax :: Type
+  type Sql92CreateTableTableConstraintSyntax syntax :: Type
+  type Sql92CreateTableOptionsSyntax syntax :: Type
 
   createTableSyntax :: Maybe (Sql92CreateTableOptionsSyntax syntax)
                     -> Sql92CreateTableTableNameSyntax syntax
@@ -90,15 +134,15 @@ class ( IsSql92TableConstraintSyntax (Sql92CreateTableTableConstraintSyntax synt
 class IsSql92TableNameSyntax (Sql92DropTableTableNameSyntax syntax) =>
   IsSql92DropTableSyntax syntax where
 
-  type Sql92DropTableTableNameSyntax syntax :: *
+  type Sql92DropTableTableNameSyntax syntax :: Type
   dropTableSyntax :: Sql92DropTableTableNameSyntax syntax -> syntax
 
 class ( IsSql92TableNameSyntax (Sql92AlterTableTableNameSyntax syntax),
         IsSql92AlterTableActionSyntax (Sql92AlterTableAlterTableActionSyntax syntax) ) =>
   IsSql92AlterTableSyntax syntax where
 
-  type Sql92AlterTableTableNameSyntax syntax :: *
-  type Sql92AlterTableAlterTableActionSyntax syntax :: *
+  type Sql92AlterTableTableNameSyntax syntax :: Type
+  type Sql92AlterTableAlterTableActionSyntax syntax :: Type
 
   alterTableSyntax :: Sql92AlterTableTableNameSyntax syntax -> Sql92AlterTableAlterTableActionSyntax syntax
                    -> syntax
@@ -106,8 +150,8 @@ class ( IsSql92TableNameSyntax (Sql92AlterTableTableNameSyntax syntax),
 class ( IsSql92ColumnSchemaSyntax (Sql92AlterTableColumnSchemaSyntax syntax)
       , IsSql92AlterColumnActionSyntax (Sql92AlterTableAlterColumnActionSyntax syntax) ) =>
   IsSql92AlterTableActionSyntax syntax where
-  type Sql92AlterTableAlterColumnActionSyntax syntax :: *
-  type Sql92AlterTableColumnSchemaSyntax syntax :: *
+  type Sql92AlterTableAlterColumnActionSyntax syntax :: Type
+  type Sql92AlterTableColumnSchemaSyntax syntax :: Type
   alterColumnSyntax :: Text -> Sql92AlterTableAlterColumnActionSyntax syntax
                     -> syntax
   addColumnSyntax :: Text -> Sql92AlterTableColumnSchemaSyntax syntax -> syntax
@@ -130,9 +174,9 @@ class ( IsSql92ColumnConstraintDefinitionSyntax (Sql92ColumnSchemaColumnConstrai
       , IsSql92ExpressionSyntax (Sql92ColumnSchemaExpressionSyntax columnSchema)
       , Typeable columnSchema, Sql92DisplaySyntax columnSchema, Eq columnSchema, Hashable columnSchema ) =>
   IsSql92ColumnSchemaSyntax columnSchema where
-  type Sql92ColumnSchemaColumnTypeSyntax columnSchema :: *
-  type Sql92ColumnSchemaExpressionSyntax columnSchema :: *
-  type Sql92ColumnSchemaColumnConstraintDefinitionSyntax columnSchema :: *
+  type Sql92ColumnSchemaColumnTypeSyntax columnSchema :: Type
+  type Sql92ColumnSchemaExpressionSyntax columnSchema :: Type
+  type Sql92ColumnSchemaColumnConstraintDefinitionSyntax columnSchema :: Type
 
   columnSchemaSyntax :: Sql92ColumnSchemaColumnTypeSyntax columnSchema {-^ Column type -}
                      -> Maybe (Sql92ColumnSchemaExpressionSyntax columnSchema) {-^ Default value -}
@@ -157,8 +201,8 @@ class ( IsSql92ColumnConstraintSyntax (Sql92ColumnConstraintDefinitionConstraint
       , IsSql92ConstraintAttributesSyntax (Sql92ColumnConstraintDefinitionAttributesSyntax constraint)
       , Typeable constraint ) =>
       IsSql92ColumnConstraintDefinitionSyntax constraint where
-  type Sql92ColumnConstraintDefinitionConstraintSyntax constraint :: *
-  type Sql92ColumnConstraintDefinitionAttributesSyntax constraint :: *
+  type Sql92ColumnConstraintDefinitionConstraintSyntax constraint :: Type
+  type Sql92ColumnConstraintDefinitionAttributesSyntax constraint :: Type
 
   constraintDefinitionSyntax :: Maybe Text -> Sql92ColumnConstraintDefinitionConstraintSyntax constraint
                              -> Maybe (Sql92ColumnConstraintDefinitionAttributesSyntax constraint)
@@ -175,9 +219,9 @@ class ( IsSql92MatchTypeSyntax (Sql92ColumnConstraintMatchTypeSyntax constraint)
       , Typeable (Sql92ColumnConstraintExpressionSyntax constraint)
       , Typeable constraint ) =>
   IsSql92ColumnConstraintSyntax constraint where
-  type Sql92ColumnConstraintMatchTypeSyntax constraint :: *
-  type Sql92ColumnConstraintReferentialActionSyntax constraint :: *
-  type Sql92ColumnConstraintExpressionSyntax constraint :: *
+  type Sql92ColumnConstraintMatchTypeSyntax constraint :: Type
+  type Sql92ColumnConstraintReferentialActionSyntax constraint :: Type
+  type Sql92ColumnConstraintExpressionSyntax constraint :: Type
 
   notNullConstraintSyntax :: constraint
   uniqueColumnConstraintSyntax :: constraint

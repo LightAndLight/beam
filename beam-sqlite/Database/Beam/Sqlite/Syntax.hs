@@ -33,6 +33,7 @@ module Database.Beam.Sqlite.Syntax
   , SqliteDataTypeSyntax(..)
   , sqliteTextType, sqliteBlobType
   , sqliteBigIntType, sqliteSerialType
+  , mkSqliteDataType
 
     -- * Building and consuming 'SqliteSyntax'
   , fromSqliteCommand, formatSqliteInsert, formatSqliteInsertOnConflict
@@ -51,8 +52,10 @@ import           Database.Beam.Migrate.Checks (HasDataTypeCreatedCheck(..))
 import           Database.Beam.Migrate.SQL.Builder hiding (fromSqlConstraintAttributes)
 import           Database.Beam.Migrate.SQL.SQL92
 import           Database.Beam.Migrate.Serialization
+import qualified Database.Beam.Migrate.Serialization as Db
 import           Database.Beam.Query hiding (ExtractField(..))
 
+import           Data.Aeson (object, (.=))
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import           Data.ByteString.Builder
@@ -68,10 +71,9 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Lazy as TL
 import           Data.Time
+import qualified Data.Time.Format.ISO8601 as Time
 import           Data.Word
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
+
 import           GHC.TypeLits
 
 import           Database.SQLite.Simple (SQLData(..))
@@ -105,12 +107,11 @@ instance Sql92DisplaySyntax SqliteSyntax where
   displaySyntax = BL.unpack . sqliteRenderSyntaxScript
 
 instance Semigroup SqliteSyntax where
-  (<>) = mappend
+  (<>) (SqliteSyntax ab av) (SqliteSyntax bb bv) =
+    SqliteSyntax (\v -> ab v <> bb v) (av <> bv)
 
 instance Monoid SqliteSyntax where
   mempty = SqliteSyntax (\_ -> mempty) mempty
-  mappend (SqliteSyntax ab av) (SqliteSyntax bb bv) =
-    SqliteSyntax (\v -> ab v <> bb v) (av <> bv)
 
 instance Eq SqliteSyntax where
   SqliteSyntax ab av == SqliteSyntax bb bv =
@@ -560,6 +561,12 @@ instance IsSql99DataTypeSyntax SqliteDataTypeSyntax where
 instance IsSql2008BigIntDataTypeSyntax SqliteDataTypeSyntax where
   bigIntType = sqliteBigIntType
 
+mkSqliteDataType :: String -> SqliteDataTypeSyntax
+mkSqliteDataType s = SqliteDataTypeSyntax (emit (fromString s)) (hsErrorType s)
+                       (Db.BeamSerializedDataType $
+                          Db.beamSerializeJSON "sqlite" (object [ "custom" .= s ]))
+                       False
+
 sqliteTextType, sqliteBlobType, sqliteBigIntType :: SqliteDataTypeSyntax
 sqliteTextType = SqliteDataTypeSyntax (emit "TEXT")
                                       (HsDataType (hsVarFrom "sqliteText" "Database.Beam.Sqlite")
@@ -710,7 +717,7 @@ instance HasSqlValueSyntax SqliteValueSyntax Int16 where
 instance HasSqlValueSyntax SqliteValueSyntax Int32 where
   sqlValueSyntax i = SqliteValueSyntax (emitValue (SQLInteger (fromIntegral i)))
 instance HasSqlValueSyntax SqliteValueSyntax Int64 where
-  sqlValueSyntax i = SqliteValueSyntax (emitValue (SQLInteger (fromIntegral i)))
+  sqlValueSyntax i = SqliteValueSyntax (emitValue (SQLInteger i))
 instance HasSqlValueSyntax SqliteValueSyntax Word8 where
   sqlValueSyntax i = SqliteValueSyntax (emitValue (SQLInteger (fromIntegral i)))
 instance HasSqlValueSyntax SqliteValueSyntax Word16 where
@@ -967,12 +974,10 @@ instance HasSqlValueSyntax SqliteValueSyntax UTCTime where
   sqlValueSyntax tm = SqliteValueSyntax (emitValue (toField tm))
 
 instance HasSqlValueSyntax SqliteValueSyntax LocalTime where
-  sqlValueSyntax tm = SqliteValueSyntax (emitValue (SQLText (fromString tmStr)))
-    where tmStr = formatTime defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%S%Q")) tm
+  sqlValueSyntax tm = SqliteValueSyntax (emitValue (SQLText (fromString (Time.formatShow Time.iso8601Format tm))))
 
 instance HasSqlValueSyntax SqliteValueSyntax Day where
-  sqlValueSyntax tm = SqliteValueSyntax (emitValue (SQLText (fromString tmStr)))
-    where tmStr = formatTime defaultTimeLocale (iso8601DateFormat Nothing) tm
+  sqlValueSyntax tm = SqliteValueSyntax (emitValue (SQLText (fromString (Time.formatShow Time.iso8601Format tm))))
 
 instance HasDataTypeCreatedCheck SqliteDataTypeSyntax where
   dataTypeHasBeenCreated _ _ = True

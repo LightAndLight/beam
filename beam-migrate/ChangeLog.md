@@ -1,12 +1,38 @@
+# Unreleased
+
+## Updated dependencies
+
+* Updated the upper bound on `parallel` to include `parallel-3.3.0.0`
+* Updated the upper bound on `time` to include `time-1.14`
+
+# 0.5.3.2
+
+## Dependencies
+
+* Removed explicit dependency on `ghc-prim`, which was not used directly.
+* Updated the upper bound to include `containers-0.8`.
+
+# 0.5.3.1
+
+## Bug fixes
+
+* Removed the `IsString` instance for `DatabaseSchema`, which allowed for the use of database schemas that did not exist.
+
+# 0.5.3.0
+
+## Added features
+
+* Added support for creating database schemas and associated tables with `createDatabaseSchema` and `createTableWithSchema`, as well as dropping schemas with `dropDatabaseSchema` (#716).
+
 # 0.5.2.1
 
-# Added features
+## Added features
 
  * Loosen some version bounds
 
 # 0.5.2.0
 
-# Addded features
+## Added features
 
  * `IN (SELECT ...)` syntax via `inSelectE`
 

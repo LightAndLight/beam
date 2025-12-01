@@ -2,7 +2,7 @@
 -- see http://haskell.org/cabal/users-guide/
 
 name:                beam-core
-version:             0.10.1.0
+version:             0.10.4.0
 synopsis:            Type-safe, feature-complete SQL query and manipulation interface for Haskell
 description:         Beam is a Haskell library for type-safe querying and manipulation of SQL databases.
                      Beam is modular and supports various backends. In order to use beam, you will need to use
@@ -61,21 +61,21 @@ library
                        Database.Beam.Schema.Lenses
 
   build-depends:       base         >=4.11    && <5.0,
-                       aeson        >=0.11    && <2.2,
-                       text         >=1.2.2.0 && <2.1,
-                       bytestring   >=0.10    && <0.12,
+                       aeson        >=0.11    && <2.3,
+                       text         >=1.2.2.0 && <2.2,
+                       bytestring   >=0.10    && <0.13,
                        mtl          >=2.2.1   && <2.4,
-                       microlens    >=0.4     && <0.5,
-                       ghc-prim     >=0.5     && <0.11,
+                       microlens    >=0.4     && <0.6,
+                       ghc-prim     >=0.5     && <0.14,
                        free         >=4.12    && <5.3,
                        dlist        >=0.7.1.2 && <1.1,
-                       time         >=1.6     && <1.13,
-                       hashable     >=1.2.4.0 && <1.5,
+                       time         >=1.6     && <1.15,
+                       hashable     >=1.2.4.0 && <1.6,
                        network-uri  >=2.6     && <2.7,
-                       containers   >=0.5     && <0.7,
+                       containers   >=0.5     && <0.9,
                        scientific   >=0.3     && <0.4,
                        vector       >=0.11    && <0.14,
-                       vector-sized >=0.5     && <1.6,
+                       vector-sized >=0.5     && <1.7,
                        tagged       >=0.8     && <0.9
 
   Default-language:    Haskell2010
@@ -83,9 +83,14 @@ library
                        GeneralizedNewtypeDeriving, RankNTypes, TupleSections, ConstraintKinds, StandaloneDeriving, TypeOperators,
                        DefaultSignatures, KindSignatures, MultiParamTypeClasses, DeriveGeneric, DeriveFunctor, DeriveDataTypeable,
                        TypeApplications, FunctionalDependencies, DataKinds, BangPatterns, InstanceSigs
-  ghc-options:         -Wall -O3
+  ghc-options:         -Wall
+                       -Widentities
+                       -Wincomplete-uni-patterns
+                       -Wincomplete-record-updates
   if impl(ghc >= 8.8)
     ghc-options: -Wcompat
+  if impl(ghc >= 8.10)
+    ghc-options: -Wunused-packages
   if flag(werror)
     ghc-options:       -Werror
   if impl(ghc >= 8.10)

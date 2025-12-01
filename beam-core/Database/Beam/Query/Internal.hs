@@ -1,6 +1,5 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors#-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE CPP #-}
 
 module Database.Beam.Query.Internal where
 
@@ -15,9 +14,6 @@ import qualified Data.Text as T
 import           Data.Typeable
 import           Data.Vector.Sized (Vector)
 import qualified Data.Vector.Sized as VS
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
 
 import           Control.Monad.Free.Church
 import           Control.Monad.State
@@ -41,9 +37,14 @@ data QF be (db :: (Type -> Type) -> Type) s next where
 
   QAll :: Projectible be r
        => (TablePrefix -> T.Text -> BeamSqlBackendFromSyntax be)
+           -- ^ build the FROM syntax using the table prefix and the table name
        -> (T.Text -> r)
+          -- ^ Given a table name, get the various Qs for all the expressions in that table
        -> (r -> Maybe (WithExprContext (BeamSqlBackendExpressionSyntax be)))
-       -> ((T.Text, r) -> next) -> QF be db s next
+          -- ^ on clause, if any
+       -> ((T.Text, r) -> next)
+          -- ^ Generate the result from the table name and projectible result
+       -> QF be db s next
 
   QArbitraryJoin :: Projectible be r
                  => QM be db (QNested s) r

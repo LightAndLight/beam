@@ -26,7 +26,7 @@
 --
 -- For an example migrate backend, see "Database.Beam.Sqlite.Migrate"
 module Database.Beam.Migrate.Backend
-  ( BeamMigrationBackend(..)
+  ( BeamMigrationBackend(..), BeamMigrateConnection(..)
   , DdlError
 
   -- * Haskell predicate conversion
@@ -34,6 +34,7 @@ module Database.Beam.Migrate.Backend
   , sql92HsPredicateConverters
   , hasColumnConverter
   , trivialHsConverter, hsPredicateConverter
+  , withExtraPredicateParsers
 
   -- * For tooling authors
   , SomeBeamMigrationBackend(..), SomeCheckedDatabaseSettings(..) )
@@ -88,8 +89,18 @@ data BeamMigrationBackend be m where
     , backendFileExtension :: String
     , backendConvertToHaskell :: HaskellPredicateConverter
     , backendActionProvider :: ActionProvider be
-    , backendTransact :: forall a. String -> m a -> IO (Either DdlError a)
+    , backendRunSqlScript :: Text -> m ()
+    , backendWithTransaction :: forall a. m a -> m a
+    , backendConnect :: String -> IO (BeamMigrateConnection be m)
     } -> BeamMigrationBackend be m
+
+withExtraPredicateParsers :: BeamMigrationBackend be m -> BeamDeserializers be -> BeamMigrationBackend be m
+withExtraPredicateParsers be ds = be { backendPredicateParsers = backendPredicateParsers be <> ds }
+
+data BeamMigrateConnection be m where
+    BeamMigrateConnection
+        :: { backendRun :: forall a. m a -> IO (Either DdlError a)
+           , backendClose :: IO () } -> BeamMigrateConnection be m
 
 -- | Monomorphic wrapper for use with plugin loaders that cannot handle
 -- polymorphism
@@ -113,15 +124,14 @@ newtype HaskellPredicateConverter
   = HaskellPredicateConverter (SomeDatabasePredicate -> Maybe SomeDatabasePredicate)
 
 instance Semigroup HaskellPredicateConverter where
-  (<>) = mappend
+  (HaskellPredicateConverter a) <> (HaskellPredicateConverter b) =
+    HaskellPredicateConverter $ \r -> a r <|> b r
 
 -- | 'HaskellPredicateConverter's can be combined monoidally.
 instance Monoid HaskellPredicateConverter where
   mempty = HaskellPredicateConverter $ \_ -> Nothing
-  mappend (HaskellPredicateConverter a) (HaskellPredicateConverter b) =
-    HaskellPredicateConverter $ \r -> a r <|> b r
 
--- | Converters for the 'TableExistsPredicate', 'TableHasPrimaryKey', and
+-- | Converters for the 'SchemaExistsPredicate', 'TableExistsPredicate', 'TableHasPrimaryKey', and
 -- 'TableHasColumn' (when supplied with a function to convert a backend data
 -- type to a haskell one).
 sql92HsPredicateConverters :: forall fromBe
@@ -129,6 +139,7 @@ sql92HsPredicateConverters :: forall fromBe
                             => (BeamMigrateSqlBackendDataTypeSyntax fromBe -> Maybe HsDataType)
                             -> HaskellPredicateConverter
 sql92HsPredicateConverters convType =
+  trivialHsConverter @SchemaExistsPredicate <>
   trivialHsConverter @TableExistsPredicate <>
   trivialHsConverter @TableHasPrimaryKey   <>
   hasColumnConverter @fromBe convType

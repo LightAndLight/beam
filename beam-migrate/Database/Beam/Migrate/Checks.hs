@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE CPP #-}
 
 -- | Defines common 'DatabasePredicate's that are shared among backends
 module Database.Beam.Migrate.Checks where
@@ -16,11 +15,23 @@ import Data.Aeson.Types (Parser, Value)
 import Data.Hashable (Hashable(..))
 import Data.Text (Text)
 import Data.Typeable (Typeable, cast)
-#if !MIN_VERSION_base(4, 11, 0)
-import Data.Semigroup
-#endif
 
 import GHC.Generics (Generic)
+
+-- * Schema checks
+
+-- | Asserts that a schema with the given name exists in a database
+data SchemaExistsPredicate = SchemaExistsPredicate Text {-^ Table name -}
+  deriving (Show, Eq, Ord, Typeable, Generic)
+instance Hashable SchemaExistsPredicate
+instance DatabasePredicate SchemaExistsPredicate where
+  englishDescription (SchemaExistsPredicate s) =
+    "Schema " <> show s <> " must exist"
+
+  serializePredicate (SchemaExistsPredicate s) =
+    object [ "schema-exists" .= s ]
+
+  predicateSpecificity _ = PredicateSpecificityAllBackends
 
 -- * Table checks
 
@@ -131,12 +142,18 @@ beamCheckDeserializers
      , HasDataTypeCreatedCheck (BeamMigrateSqlBackendDataTypeSyntax be) )
   => BeamDeserializers be
 beamCheckDeserializers = mconcat
-  [ beamDeserializer (const deserializeTableExistsPredicate)
+  [ beamDeserializer (const deserializeSchemaExistsPredicate)
+  , beamDeserializer (const deserializeTableExistsPredicate)
   , beamDeserializer (const deserializeTableHasPrimaryKeyPredicate)
   , beamDeserializer deserializeTableHasColumnPredicate
   , beamDeserializer deserializeTableColumnHasConstraintPredicate
   ]
   where
+    deserializeSchemaExistsPredicate :: Value -> Parser SomeDatabasePredicate
+    deserializeSchemaExistsPredicate =
+      withObject "SchemaExistsPredicate" $ \v ->
+      SomeDatabasePredicate <$> (SchemaExistsPredicate <$> v .: "schema-exists")
+
     deserializeTableExistsPredicate :: Value -> Parser SomeDatabasePredicate
     deserializeTableExistsPredicate =
       withObject "TableExistPredicate" $ \v ->

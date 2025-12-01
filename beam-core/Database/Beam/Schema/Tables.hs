@@ -19,6 +19,7 @@ module Database.Beam.Schema.Tables
     , DatabaseEntityDescriptor(..)
     , DatabaseEntity(..), TableEntity, ViewEntity, DomainTypeEntity
     , dbEntityDescriptor
+    , dbName, dbSchema, dbTableFields
     , DatabaseModification, EntityModification(..)
     , FieldModification(..)
     , dbModification, tableModification, withDbModification
@@ -57,7 +58,20 @@ module Database.Beam.Schema.Tables
     , pk
     , allBeamValues, changeBeamRep
     , alongsideTable
-    , defaultFieldName )
+    , defaultFieldName
+
+    -- * Exported so we can override defaults
+    -- ** For 'Beamable'
+    , GZipTables(..)
+    , GTableSkeleton(..)
+    -- ** For 'Database'
+    , GZipDatabase(..)
+    -- ** For 'defaultDbSettings'
+    , GAutoDbSettings(..)
+    , GDefaultTableFieldSettings(..)
+    , ChooseSubTableStrategy
+    , SubTableStrategyImpl
+    )
     where
 
 import           Database.Beam.Backend.Types
@@ -83,7 +97,6 @@ import           GHC.TypeLits
 import           GHC.Types
 
 import           Lens.Micro hiding (to)
-import qualified Lens.Micro as Lens
 
 -- | Allows introspection into database types.
 --
@@ -187,7 +200,9 @@ tableModification = runIdentity $
 -- > db = defaultDbSettings `withDbModification`
 -- >      dbModification {
 -- >        -- Change default name "table1" to "Table_1". Change the name of "table1Field1" to "first_name"
--- >        table1 = modifyTable (\_ -> "Table_1") (tableModification { table1Field1 = "first_name" }
+-- >        table1 = setEntityName "Table_1" <> modifyTableFields tableModification { 
+-- >            table1Field1 = "first_name" 
+-- >         }
 -- >      }
 withDbModification :: forall db be entity
                     . Database be db
@@ -383,8 +398,21 @@ data DatabaseEntity be (db :: (Type -> Type) -> Type) entityType  where
       IsDatabaseEntity be entityType =>
       DatabaseEntityDescriptor be entityType ->  DatabaseEntity be db entityType
 
-dbEntityDescriptor :: SimpleGetter (DatabaseEntity be db entityType) (DatabaseEntityDescriptor be entityType)
-dbEntityDescriptor = Lens.to (\(DatabaseEntity e) -> e)
+dbEntityDescriptor :: Lens' (DatabaseEntity be db entityType) (DatabaseEntityDescriptor be entityType)
+dbEntityDescriptor f (DatabaseEntity d) = DatabaseEntity <$> f d
+
+dbName :: IsDatabaseEntity be entityType => Lens' (DatabaseEntity be db entityType) Text
+dbName = dbEntityDescriptor . dbEntityName
+
+dbSchema :: IsDatabaseEntity be entityType => Traversal' (DatabaseEntity be db entityType) (Maybe Text)
+dbSchema = dbEntityDescriptor . dbEntitySchema
+
+dbTableFields :: Lens' (DatabaseEntity be db (TableEntity table)) (TableSettings table)
+dbTableFields = dbEntityDescriptor . (\f DatabaseTable { dbTableSchema = sch
+                                                       , dbTableOrigName = nm
+                                                       , dbTableCurrentName = curNm
+                                                       , dbTableSettings = s } ->
+                                      DatabaseTable sch nm curNm <$> f s)
 
 -- | When parameterized by this entity tag, a database type will hold
 --   meta-information on the Haskell mappings of database entities. Under the

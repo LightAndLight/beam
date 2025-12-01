@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -29,7 +31,7 @@ module Database.Beam.Postgres.Migrate
   ) where
 
 import           Database.Beam.Backend.SQL
-import           Database.Beam.Migrate.Actions (defaultActionProvider)
+import           Database.Beam.Migrate.Actions (defaultActionProvider, defaultSchemaActionProvider)
 import qualified Database.Beam.Migrate.Backend as Tool
 import qualified Database.Beam.Migrate.Checks as Db
 import qualified Database.Beam.Migrate.SQL as Db
@@ -53,7 +55,7 @@ import qualified Database.PostgreSQL.Simple.TypeInfo.Static as Pg
 
 import           Control.Applicative ((<|>))
 import           Control.Arrow
-import           Control.Exception (bracket)
+import           Control.Exception.Lifted (mask, onException)
 import           Control.Monad
 
 import           Data.Aeson hiding (json)
@@ -70,36 +72,54 @@ import qualified Data.Text.Encoding as TE
 import           Data.Typeable
 import           Data.UUID.Types (UUID)
 import qualified Data.Vector as V
-#if !MIN_VERSION_base(4, 11, 0)
 import           Data.Semigroup
-#else
-import           Data.Monoid (Endo(..))
-#endif
 import           Data.Word (Word64)
+
+import           GHC.Generics ( Generic )
 
 -- | Top-level migration backend for use by @beam-migrate@ tools
 migrationBackend :: Tool.BeamMigrationBackend Postgres Pg
 migrationBackend = Tool.BeamMigrationBackend
-                        "postgres"
-                        (unlines [ "For beam-postgres, this is a libpq connection string which can either be a list of key value pairs or a URI"
-                                 , ""
-                                 , "For example, 'host=localhost port=5432 dbname=mydb connect_timeout=10' or 'dbname=mydb'"
-                                 , ""
-                                 , "Or use URIs, for which the general form is:"
-                                 , "  postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]"
-                                 , ""
-                                 , "See <https://www.postgresql.org/docs/9.5/static/libpq-connect.html#LIBPQ-CONNSTRING> for more information" ])
-                        (liftIOWithHandle getDbConstraints)
-                        (Db.sql92Deserializers <> Db.sql99DataTypeDeserializers <>
-                         Db.sql2008BigIntDataTypeDeserializers <>
-                         postgresDataTypeDeserializers <>
-                         Db.beamCheckDeserializers)
-                        (BCL.unpack . (<> ";") . pgRenderSyntaxScript . fromPgCommand) "postgres.sql"
-                        pgPredConverter (defaultActionProvider <> pgExtensionActionProvider <>
-                                         pgCustomEnumActionProvider)
-                        (\options action ->
-                            bracket (Pg.connectPostgreSQL (fromString options)) Pg.close $ \conn ->
-                              left show <$> withPgDebug (\_ -> pure ()) conn action)
+                   { Tool.backendName = "postgres"
+                   , Tool.backendConnStringExplanation =
+                       unlines [ "For beam-postgres, this is a libpq connection string which can either be a list of key value pairs or a URI"
+                               , ""
+                               , "For example, 'host=localhost port=5432 dbname=mydb connect_timeout=10' or 'dbname=mydb'"
+                               , ""
+                               , "Or use URIs, for which the general form is:"
+                               , "  postgresql://[user[:password]@][netloc][:port][/dbname][?param1=value1&...]"
+                               , ""
+                               , "See <https://www.postgresql.org/docs/9.5/static/libpq-connect.html#LIBPQ-CONNSTRING> for more information" ]
+                   , Tool.backendGetDbConstraints = liftIOWithHandle getDbConstraints
+                   , Tool.backendPredicateParsers =
+                       Db.sql92Deserializers <> Db.sql99DataTypeDeserializers <>
+                       Db.sql2008BigIntDataTypeDeserializers <>
+                       postgresDataTypeDeserializers <>
+                       Db.beamCheckDeserializers
+                   , Tool.backendRenderSyntax = (BCL.unpack . (<> ";") . pgRenderSyntaxScript . fromPgCommand)
+                   , Tool.backendFileExtension = "postgres.sql"
+                   , Tool.backendConvertToHaskell = pgPredConverter
+                   , Tool.backendActionProvider =
+                       mconcat [ defaultActionProvider
+                               , defaultSchemaActionProvider
+                               , pgExtensionActionProvider
+                               , pgCustomEnumActionProvider
+                               ]
+                   , Tool.backendRunSqlScript = \t -> liftIOWithHandle (\hdl -> void $ Pg.execute_ hdl (Pg.Query (TE.encodeUtf8 t)))
+                   , Tool.backendWithTransaction =
+                       \go -> mask $ \unmask -> do
+                                liftIOWithHandle Pg.begin
+                                x <- unmask go `onException` liftIOWithHandle Pg.rollback
+                                liftIOWithHandle Pg.commit
+                                pure x
+                   , Tool.backendConnect = \options -> do
+                        conn <- Pg.connectPostgreSQL (fromString options)
+                        pure Tool.BeamMigrateConnection
+                             { Tool.backendRun = \action ->
+                                 left show <$> withPgDebug (\_ -> pure ()) conn action
+                             , Tool.backendClose = Pg.close conn
+                             }
+                   }
 
 -- | 'BeamDeserializers' for postgres-specific types:
 --
@@ -321,27 +341,37 @@ pgUnknownDataType oid@(Pg.Oid oid') pgMod =
   PgDataTypeSyntax (PgDataTypeDescrOid oid pgMod) (emit "{- UNKNOWN -}")
                    (pgDataTypeJSON (object [ "oid" .= (fromIntegral oid' :: Word), "mod" .= pgMod ]))
 
--- * Create constraints from a connection
 
+newtype SchemaName = MkSchemaName T.Text
+  deriving (Generic, Pg.FromRow)
+
+-- * Create constraints from a connection
 getDbConstraints :: Pg.Connection -> IO [ Db.SomeDatabasePredicate ]
-getDbConstraints = getDbConstraintsForSchemas Nothing
+getDbConstraints conn = do 
+  schemata <- Pg.query_ conn "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT LIKE '%pg_%' AND schema_name <> 'information_schema' AND schema_name <> 'public';"
+  case schemata of
+    [] -> getDbConstraintsForSchemas Nothing conn
+    schemata' -> 
+        (++) <$> getDbConstraintsForSchemas (Just ((\(MkSchemaName nm) -> T.unpack nm) <$> schemata')) conn
+             <*> getDbConstraintsForSchemas Nothing conn
 
 getDbConstraintsForSchemas :: Maybe [String] -> Pg.Connection -> IO [ Db.SomeDatabasePredicate ]
 getDbConstraintsForSchemas subschemas conn =
-  do tbls <- case subschemas of
-        Nothing -> Pg.query_ conn "SELECT cl.oid, relname FROM pg_catalog.pg_class \"cl\" join pg_catalog.pg_namespace \"ns\" on (ns.oid = relnamespace) where nspname = any (current_schemas(false)) and relkind='r'"
-        Just ss -> Pg.query  conn "SELECT cl.oid, relname FROM pg_catalog.pg_class \"cl\" join pg_catalog.pg_namespace \"ns\" on (ns.oid = relnamespace) where nspname IN ? and relkind='r'" (Pg.Only (Pg.In ss))
-     let tblsExist = map (\(_, tbl) -> Db.SomeDatabasePredicate (Db.TableExistsPredicate (Db.QualifiedName Nothing tbl))) tbls
-
+  do (tbls :: [(Pg.Oid, Maybe T.Text, T.Text)]) <- case subschemas of
+        Nothing -> Pg.query_ conn "SELECT cl.oid, NULL, relname FROM pg_catalog.pg_class \"cl\" join pg_catalog.pg_namespace \"ns\" on (ns.oid = relnamespace) where nspname = any (current_schemas(false)) and relkind='r'"
+        Just ss -> Pg.query  conn "SELECT cl.oid, nspname, relname FROM pg_catalog.pg_class \"cl\" join pg_catalog.pg_namespace \"ns\" on (ns.oid = relnamespace) where nspname IN ? and relkind='r'" (Pg.Only (Pg.In ss))
+     let tblsExist = map (\(_, mschema, tbl) -> Db.SomeDatabasePredicate (Db.TableExistsPredicate (Db.QualifiedName mschema tbl))) tbls
+         schemaChecks = fromMaybe [] $ (fmap (Db.SomeDatabasePredicate . Db.SchemaExistsPredicate . T.pack)) <$> subschemas
      enumerationData <-
        Pg.query_ conn
          (fromString (unlines
                       [ "SELECT t.typname, t.oid, array_agg(e.enumlabel ORDER BY e.enumsortorder)"
                       , "FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid"
-                      , "GROUP BY t.typname, t.oid" ]))
+                      , "GROUP BY t.typname, t.oid" 
+                      ])) 
 
      columnChecks <-
-       fmap mconcat . forM tbls $ \(oid, tbl) ->
+       fmap mconcat . forM tbls $ \(oid, mschema, tbl) ->
        do columns <- Pg.query conn "SELECT attname, atttypid, atttypmod, attnotnull, pg_catalog.format_type(atttypid, atttypmod) FROM pg_catalog.pg_attribute att WHERE att.attrelid=? AND att.attnum>0 AND att.attisdropped='f'"
                        (Pg.Only (oid :: Pg.Oid))
           let columnChecks = map (\(nm, typId :: Pg.Oid, typmod, _, typ :: ByteString) ->
@@ -351,24 +381,26 @@ getDbConstraintsForSchemas subschemas conn =
                                                      pgDataTypeFromAtt typ typId typmod' <|>
                                                      pgEnumerationTypeFromAtt enumerationData typ typId typmod'
 
-                                    in Db.SomeDatabasePredicate (Db.TableHasColumn (Db.QualifiedName Nothing tbl) nm pgDataType :: Db.TableHasColumn Postgres)) columns
+                                    in Db.SomeDatabasePredicate (Db.TableHasColumn (Db.QualifiedName mschema tbl) nm pgDataType :: Db.TableHasColumn Postgres)) columns
               notNullChecks = concatMap (\(nm, _, _, isNotNull, _) ->
                                            if isNotNull then
-                                            [Db.SomeDatabasePredicate (Db.TableColumnHasConstraint (Db.QualifiedName Nothing tbl) nm (Db.constraintDefinitionSyntax Nothing Db.notNullConstraintSyntax Nothing)
+                                            [Db.SomeDatabasePredicate (Db.TableColumnHasConstraint (Db.QualifiedName mschema tbl) nm (Db.constraintDefinitionSyntax Nothing Db.notNullConstraintSyntax Nothing)
                                               :: Db.TableColumnHasConstraint Postgres)]
                                            else [] ) columns
 
-          pure (columnChecks ++ notNullChecks)
+          pure (columnChecks ++ notNullChecks ++ schemaChecks)
 
      primaryKeys <-
-       map (\(relnm, cols) -> Db.SomeDatabasePredicate (Db.TableHasPrimaryKey (Db.QualifiedName Nothing relnm) (V.toList cols))) <$>
-       Pg.query_ conn (fromString (unlines [ "SELECT c.relname, array_agg(a.attname ORDER BY k.n ASC)"
+       map (\(schema, relnm, cols) -> Db.SomeDatabasePredicate (Db.TableHasPrimaryKey (Db.QualifiedName schema relnm) (V.toList cols))) <$>
+                                            -- We nullify the 'public' schema, which is the implicit default in Postgres
+       Pg.query_ conn (fromString (unlines [ "SELECT NULLIF(ns.nspname, 'public'), c.relname, array_agg(a.attname ORDER BY k.n ASC)"
                                            , "FROM pg_index i"
                                            , "CROSS JOIN unnest(i.indkey) WITH ORDINALITY k(attid, n)"
                                            , "JOIN pg_attribute a ON a.attnum=k.attid AND a.attrelid=i.indrelid"
                                            , "JOIN pg_class c ON c.oid=i.indrelid"
                                            , "JOIN pg_namespace ns ON ns.oid=c.relnamespace"
-                                           , "WHERE ns.nspname = any (current_schemas(false)) AND c.relkind='r' AND i.indisprimary GROUP BY relname, i.indrelid" ]))
+                                           -- Recall that schema of the form 'pg_' are Postgres internal tables that should not be taken into account
+                                           , "WHERE nspname NOT LIKE '%pg_%' AND c.relkind='r' AND i.indisprimary GROUP BY nspname, relname, i.indrelid" ]))
 
      let enumerations =
            map (\(enumNm, _, options) -> Db.SomeDatabasePredicate (PgHasEnum enumNm (V.toList options))) enumerationData

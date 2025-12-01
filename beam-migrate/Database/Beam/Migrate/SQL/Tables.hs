@@ -8,7 +8,8 @@ module Database.Beam.Migrate.SQL.Tables
   ( -- * Table manipulation
 
     -- ** Creation and deletion
-    createTable, dropTable
+    createTable, createTableWithSchema 
+  , dropTable
   , preserve
 
     -- ** @ALTER TABLE@
@@ -18,6 +19,9 @@ module Database.Beam.Migrate.SQL.Tables
 
   , renameTableTo, renameColumnTo
   , addColumn, dropColumn
+
+    -- * Schema manipulation
+  , DatabaseSchema(databaseSchemaName), createDatabaseSchema, dropDatabaseSchema, existingDatabaseSchema
 
     -- * Field specification
   , DefaultValue, Constraint(..), NotNullConstraint
@@ -49,6 +53,8 @@ import Control.Monad.Identity
 import Control.Monad.Writer.Strict
 import Control.Monad.State
 
+import Data.Coerce (coerce)
+import Data.Kind (Type)
 import Data.Text (Text)
 import Data.Typeable
 import qualified Data.Kind as Kind (Constraint)
@@ -64,16 +70,82 @@ import Lens.Micro ((^.))
 --   The first argument is the name of the table.
 --
 --   The second argument is a table containing a 'FieldSchema' for each field.
---   See documentation on the 'Field' command for more information.c
+--   See documentation on the 'Field' command for more information.
+--
+--   To create a table in a specific schema, see 'createTableWithSchema'.
 createTable :: ( Beamable table, Table table
                , BeamMigrateSqlBackend be )
             => Text -> TableSchema be table
             -> Migration be (CheckedDatabaseEntity be db (TableEntity table))
-createTable newTblName tblSettings =
+createTable = createTableWithSchema Nothing
+
+-- * Schema manipulation
+
+-- | Represents a database schema. To create one, see 'createDatabaseSchema'; 
+--   to materialize one, see 'existingDatabaseSchema'.
+newtype DatabaseSchema 
+  = DatabaseSchema{databaseSchemaName :: Text}
+  deriving (Eq, Show)
+
+-- | Add a @CREATE SCHEMA@ statement to this migration
+--
+--   To create a table in a specific schema, see 'createTableWithSchema'.
+--   To drop a schema, see 'dropDatabaseSchema'.
+--   To materialize an existing schema for use in a migration, see 'existingDatabaseSchema'.
+createDatabaseSchema :: BeamMigrateSchemaSqlBackend be
+                     => Text
+                     -> Migration be DatabaseSchema
+createDatabaseSchema nm = do
+  upDown (createSchemaCmd (createSchemaSyntax (schemaName nm))) Nothing
+  pure $ DatabaseSchema nm
+
+-- | Add a @DROP SCHEMA@ statement to this migration.
+--
+--   Depending on the backend, this may fail if the schema is not empty. 
+--
+--   To create a schema, see 'createDatabaseSchema'.
+--   To materialize a 'DatabaseSchema', see 'existingDatabaseSchema
+dropDatabaseSchema :: BeamMigrateSchemaSqlBackend be
+                   => DatabaseSchema
+                   -> Migration be ()
+dropDatabaseSchema (DatabaseSchema nm) 
+  = upDown (dropSchemaCmd (dropSchemaSyntax (schemaName nm))) Nothing
+
+-- | Materialize a schema for use during a migration.
+--
+--   Example usage, where @NewDB@ has one more table than @OldDB@ in the @my_schema@ schema:
+--
+-- @
+-- migrationStep :: 'CheckedDatabaseSettings' be OldDB
+--               -> 'Migration' be ('CheckedDatabaseSettings' be NewDB)
+-- migrationStep (OldDB oldtable)= do
+--   schema <- 'existingDatabaseSchema' "my_schema"
+--   pure $ NewDB \<$\> pure oldtable
+--                \<*\> 'createTableWithSchema' (Just schema) "my_table"
+-- @
+existingDatabaseSchema :: Text -> Migration be DatabaseSchema
+existingDatabaseSchema = pure . DatabaseSchema
+
+-- | Add a @CREATE TABLE@ statement to this migration, with an explicit schema
+--
+--   The first argument is the name of the schema, while the second argument is the name of the table.
+--
+--   The second argument is a table containing a 'FieldSchema' for each field.
+--   See documentation on the 'Field' command for more information.
+--
+--   Note that the database schema is expected to exist; see 'createDatabaseSchema' to create
+--   a database schema.
+createTableWithSchema :: ( Beamable table, Table table
+                         , BeamMigrateSqlBackend be )
+                      => Maybe DatabaseSchema -- ^ Schema name, if any
+                      -> Text       -- ^ Table name 
+                      -> TableSchema be table
+                      -> Migration be (CheckedDatabaseEntity be db (TableEntity table))
+createTableWithSchema maybeSchemaName newTblName tblSettings =
   do let pkFields = allBeamValues (\(Columnar' (TableFieldSchema name _ _)) -> name) (primaryKey tblSettings)
          tblConstraints = if null pkFields then [] else [ primaryKeyConstraintSyntax pkFields ]
          createTableCommand =
-           createTableSyntax Nothing (tableName Nothing newTblName)
+           createTableSyntax Nothing (tableName (coerce <$> maybeSchemaName) newTblName)
                              (allBeamValues (\(Columnar' (TableFieldSchema name (FieldSchema schema) _)) -> (name, schema)) tblSettings)
                              tblConstraints
          command = createTableCmd createTableCommand
@@ -81,7 +153,7 @@ createTable newTblName tblSettings =
          tbl' = changeBeamRep (\(Columnar' (TableFieldSchema name _ _)) -> Columnar' (TableField (pure name) name)) tblSettings
 
          fieldChecks = changeBeamRep (\(Columnar' (TableFieldSchema _ _ cs)) -> Columnar' (Const cs)) tblSettings
-
+        
          tblChecks = [ TableCheck (\tblName _ -> Just (SomeDatabasePredicate (TableExistsPredicate tblName))) ] ++
                      primaryKeyCheck
 
@@ -89,9 +161,22 @@ createTable newTblName tblSettings =
            case allBeamValues (\(Columnar' (TableFieldSchema name _ _)) -> name) (primaryKey tblSettings) of
              [] -> []
              cols -> [ TableCheck (\tblName _ -> Just (SomeDatabasePredicate (TableHasPrimaryKey tblName cols))) ]
+         
+         -- If a schema has been defined explicitly, then it should be part of checks
+         schemaCheck = 
+            case maybeSchemaName of
+              Nothing -> []
+              Just (DatabaseSchema sn) -> [ SomeDatabasePredicate (SchemaExistsPredicate sn) ] 
 
      upDown command Nothing
-     pure (CheckedDatabaseEntity (CheckedDatabaseTable (DatabaseTable Nothing newTblName newTblName tbl') tblChecks fieldChecks) [])
+     pure (CheckedDatabaseEntity 
+            (CheckedDatabaseTable 
+              (DatabaseTable (coerce <$> maybeSchemaName) newTblName newTblName tbl') 
+              tblChecks 
+              fieldChecks
+            ) 
+            schemaCheck
+          )
 
 -- | Add a @DROP TABLE@ statement to this migration.
 dropTable :: BeamMigrateSqlBackend be
@@ -332,7 +417,7 @@ instance ( BeamMigrateSqlBackend be, HasDataTypeCreatedCheck (BeamMigrateSqlBack
     where checks = [ FieldCheck (\tbl field'' -> SomeDatabasePredicate (TableHasColumn tbl field'' ty :: TableHasColumn be)) ] ++
                    map (\cns -> FieldCheck (\tbl field'' -> SomeDatabasePredicate (TableColumnHasConstraint tbl field'' cns :: TableColumnHasConstraint be))) constraints
 
-type family IsNotNull (x :: *) :: Kind.Constraint where
+type family IsNotNull (x :: Type) :: Kind.Constraint where
   IsNotNull (Maybe x) = TypeError ('Text "You used Database.Beam.Migrate.notNull on a column with type" ':$$:
                                    'ShowType (Maybe x) ':$$:
                                    'Text "Either remove 'notNull' from your migration or 'Maybe' from your table")

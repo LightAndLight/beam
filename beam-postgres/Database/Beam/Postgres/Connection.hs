@@ -67,9 +67,6 @@ import           Data.String
 import qualified Data.Text as T
 import           Data.Text.Encoding (decodeUtf8)
 import           Data.Typeable (cast)
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
 
 import           Foreign.C.Types
 
@@ -154,12 +151,14 @@ runPgRowReader conn rowIdx res fields (FromBackendRowM readRow) =
                           case pgErr of
                             Pg.ConversionFailed { Pg.errSQLType = sql
                                                 , Pg.errHaskellType = hs
-                                                , Pg.errMessage = msg } ->
-                              pure (ColumnTypeMismatch hs sql msg)
+                                                , Pg.errMessage = msg
+                                                , Pg.errSQLField = errField } ->
+                              pure (ColumnTypeMismatch hs sql ("Conversion failed for field'" <> errField <> "': " <> msg))
                             Pg.Incompatible { Pg.errSQLType = sql
                                             , Pg.errHaskellType = hs
-                                            , Pg.errMessage = msg } ->
-                              pure (ColumnTypeMismatch hs sql msg)
+                                            , Pg.errMessage = msg
+                                            , Pg.errSQLField = errField } ->
+                              pure (ColumnTypeMismatch hs sql ("Incompatible field: '" <> errField <> "': " <> msg))
                             Pg.UnexpectedNull {} ->
                               pure ColumnUnexpectedNull
              in pure (Left (BeamRowReadError (Just (fromIntegral curCol)) err))
@@ -307,6 +306,8 @@ data FetchMode
 -- @beam-postgres@ also provides functions that let you run queries without
 -- 'MonadBeam'. These functions may be more efficient and offer a conduit
 -- API. See "Database.Beam.Postgres.Conduit" for more information.
+--
+-- You can execute 'Pg' actions using 'runBeamPostgres' or 'runBeamPostgresDebug'.
 newtype Pg a = Pg { runPg :: F PgF a }
     deriving (Monad, Applicative, Functor, MonadFree PgF)
 

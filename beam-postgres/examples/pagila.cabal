@@ -1,0 +1,49 @@
+cabal-version:      3.0
+name:               pagila
+version:            0.1.0.0
+license:            MIT
+author:             Travis Athougies
+maintainer:         travis@athougies.net
+build-type:         Simple
+
+common warnings
+    ghc-options: -Wall
+    default-language: Haskell2010
+
+library
+    import:           warnings
+    exposed-modules:  Pagila.Schema,
+                      Pagila.Schema.V0001,
+                      Pagila.Schema.V0002,
+                      Pagila.Schema.CustomMigrateExample,
+                      Pagila.CompileTimeTest
+    build-depends:    base,
+                      time,
+                      scientific,
+                      bytestring,
+                      text,
+                      postgresql-simple,
+                      beam-core,
+                      beam-postgres,
+                      beam-migrate
+    hs-source-dirs:   src
+    
+
+test-suite pagila-test
+    import:           warnings
+    -- other-modules:
+    -- other-extensions:
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          pagilatest.hs
+    build-depends:    base,
+                      beam-core,
+                      beam-migrate,
+                      beam-postgres,
+                      pagila,
+                      conduit,
+                      time,
+                      bytestring,
+                      text,
+                      postgresql-simple
+

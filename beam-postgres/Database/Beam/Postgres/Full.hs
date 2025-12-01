@@ -4,6 +4,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Module providing (almost) full support for Postgres query and data
 -- manipulation statements. These functions shadow the functions in
@@ -18,6 +19,9 @@ module Database.Beam.Postgres.Full
   , lockingAllTablesFor_, lockingFor_
 
   , locked_, lockAll_, withLocks_
+
+  -- ** Inner WITH queries
+  , pgSelectWith
 
   -- ** Lateral joins
   , lateral_
@@ -54,21 +58,22 @@ module Database.Beam.Postgres.Full
   ) where
 
 import           Database.Beam hiding (insert, insertValues)
-import           Database.Beam.Query.Internal
 import           Database.Beam.Backend.SQL
 import           Database.Beam.Backend.SQL.BeamExtensions
+import qualified Database.Beam.Query.CTE as CTE
+import           Database.Beam.Query.Internal
 import           Database.Beam.Schema.Tables
 
 import           Database.Beam.Postgres.Types
 import           Database.Beam.Postgres.Syntax
 
 import           Control.Monad.Free.Church
+import           Control.Monad.State.Strict (evalState)
+import           Control.Monad.Writer (runWriterT)
 
+import           Data.Kind (Type)
 import           Data.Proxy (Proxy(..))
 import qualified Data.Text as T
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
 
 -- * @SELECT@
 
@@ -229,7 +234,7 @@ runPgInsertReturningList = \case
 
 -- | What to do when an @INSERT@ statement inserts a row into the table @tbl@
 -- that violates a constraint.
-newtype PgInsertOnConflict (tbl :: (* -> *) -> *) =
+newtype PgInsertOnConflict (tbl :: (Type -> Type) -> Type) =
     PgInsertOnConflict (tbl (QField QInternal) -> PgInsertOnConflictSyntax)
 
 -- | Postgres @LATERAL JOIN@ support
@@ -271,6 +276,41 @@ lateral_ using mkSubquery = do
                                   fromPgFrom a <> emit " JOIN LATERAL " <> fromPgFrom b <> emit " ON " <> fromPgExpression on'')
                            (\_ -> Nothing)
                            (rewriteThread (Proxy @s))))
+
+-- | The SQL standard only allows CTE expressions (WITH expressions)
+-- at the top-level. Postgres allows you to embed these within a
+-- subquery.
+--
+-- For example,
+--
+-- @
+-- SELECT a.column1, b.column2 FROM (WITH RECURSIVE ... ) a JOIN b
+-- @
+--
+-- @beam-core@ offers 'selectWith' to produce a top-level 'SqlSelect'
+-- but these cannot be turned into 'Q' objects for use within joins.
+--
+-- The 'pgSelectWith' function is more flexible and indeed
+-- 'selectWith' for @beam-postgres@ is equivalent to se
+pgSelectWith :: forall db s res
+              . Projectible Postgres res
+             => With Postgres db (Q Postgres db s res) -> Q Postgres db s res
+pgSelectWith (CTE.With mkQ) =
+    let (q, (recursiveness, ctes)) = evalState (runWriterT mkQ) 0
+        fromSyntax tblPfx =
+            case recursiveness of
+              CTE.Nonrecursive -> withSyntax ctes (buildSqlQuery tblPfx q)
+              CTE.Recursive -> withRecursiveSyntax ctes (buildSqlQuery tblPfx q)
+    in Q (liftF (QAll (\tblPfx tName ->
+                           let (_, names) = mkFieldNames @Postgres @res (qualifiedField tName)
+                           in fromTable (PgTableSourceSyntax $
+                                         mconcat [ emit "(", fromPgSelect (fromSyntax tblPfx), emit ")" ])
+                                        (Just (tName, Just names)))
+                      (\tName ->
+                           let (projection, _) = mkFieldNames @Postgres @res (qualifiedField tName)
+                           in projection)
+                      (\_ -> Nothing)
+                      snd))
 
 -- | By default, Postgres will throw an error when a conflict is detected. This
 -- preserves that functionality.
@@ -397,7 +437,7 @@ runPgDeleteReturningList (PgDeleteReturning syntax) = runReturningList $ PgComma
 -- * General @RETURNING@ support
 
 class PgReturning cmd where
-  type PgReturningType cmd :: * -> *
+  type PgReturningType cmd :: Type -> Type
 
   returning :: (Beamable tbl, Projectible Postgres a)
             => cmd Postgres tbl -> (tbl (QExpr Postgres PostgresInaccessible) -> a)

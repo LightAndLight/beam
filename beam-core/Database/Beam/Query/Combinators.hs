@@ -1,6 +1,5 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE CPP #-}
 
 module Database.Beam.Query.Combinators
     ( -- * Various SQL functions and constructs
@@ -41,7 +40,8 @@ module Database.Beam.Query.Combinators
     , QIfCond, QIfElse
     , (<|>.)
 
-    , limit_, offset_
+    , limit_, limitMaybe_
+    , offset_, offsetMaybe_
 
     , as_
 
@@ -66,8 +66,8 @@ module Database.Beam.Query.Combinators
     , orderBy_, asc_, desc_, nullsFirst_, nullsLast_
     ) where
 
-import Database.Beam.Backend.Types
 import Database.Beam.Backend.SQL
+import Database.Beam.Backend.Types
 
 import Database.Beam.Query.Internal
 import Database.Beam.Query.Ord
@@ -83,6 +83,7 @@ import Control.Applicative
 import Data.Maybe
 import Data.Proxy
 import Data.Time (LocalTime)
+import Unsafe.Coerce (unsafeCoerce)
 
 import GHC.TypeLits (TypeError, ErrorMessage(Text))
 
@@ -328,6 +329,8 @@ nub_ :: ( BeamSqlBackend be, Projectible be r )
 nub_ (Q sub) = Q $ liftF (QDistinct (\_ _ -> setQuantifierDistinct) sub id)
 
 -- | Limit the number of results returned by a query.
+--
+-- See also `limitMaybe_` to conditionally apply a limit.
 limit_ :: forall s a be db
         . ( Projectible be a
           , ThreadRewritable (QNested s) a )
@@ -335,13 +338,41 @@ limit_ :: forall s a be db
 limit_ limit' (Q q) =
   Q (liftF (QLimit limit' q (rewriteThread (Proxy @s))))
 
--- | Drop the first `offset'` results.
+-- | Conditionally limit the number of results returned by a query.
+--
+-- @since 0.10.4.0
+limitMaybe_ :: forall s a be db
+        . ( Projectible be a
+          , ThreadRewritable (QNested s) a )
+        => Maybe Integer -> Q be db (QNested s) a -> Q be db s (WithRewrittenThread (QNested s) s a)
+limitMaybe_ (Just limit') (Q q) =
+  Q (liftF (QLimit limit' q (rewriteThread (Proxy @s))))
+-- This uses unsafeCoerce, but should be safe since this function is tested.
+-- See discussion on https://github.com/haskell-beam/beam/pull/633.
+limitMaybe_ Nothing (Q q) = Q (unsafeCoerce q)
+
+-- | Drop the first `offset` results.
+--
+-- See also `offsetMaybe_` to conditionally apply an offset
 offset_ :: forall s a be db
          . ( Projectible be a
            , ThreadRewritable (QNested s) a )
         => Integer -> Q be db (QNested s) a -> Q be db s (WithRewrittenThread (QNested s) s a)
 offset_ offset' (Q q) =
   Q (liftF (QOffset offset' q (rewriteThread (Proxy @s))))
+
+-- | Conditionally drop the first `offset` results.
+--
+-- @since 0.10.4.0
+offsetMaybe_ :: forall s a be db
+         . ( Projectible be a
+           , ThreadRewritable (QNested s) a )
+        => Maybe Integer -> Q be db (QNested s) a -> Q be db s (WithRewrittenThread (QNested s) s a)
+offsetMaybe_ (Just offset') (Q q) =
+  Q (liftF (QOffset offset' q (rewriteThread (Proxy @s))))
+-- This uses unsafeCoerce, but should be safe since this function is tested.
+-- See discussion on https://github.com/haskell-beam/beam/pull/633.
+offsetMaybe_ Nothing (Q q) = Q (unsafeCoerce q)
 
 -- | Use the SQL @EXISTS@ operator to determine if the given query returns any results
 exists_ :: ( BeamSqlBackend be, HasQBuilder be, Projectible be a)
@@ -564,7 +595,14 @@ instance ( Beamable table, BeamSqlBackend be
     in changeBeamRep (\(Columnar' (WithConstraint x :: WithConstraint (BeamSqlBackendCanSerialize be) (Maybe x))) ->
                          Columnar' (QExpr (pure (valueE (sqlValueSyntax x))))) fields
 
+-- | SQL @DEFAULT@ support.
+--
+-- Note that  `default_` has restrictions not currently represented in the Haskell type system.
+-- For example, using `default_` as the argument to a function like `coalesce_`
+-- will result in a runtime error, just like the SQL code @COALESCE (NULL, DEFAULT)@
+-- would raise a runtime error.
 default_ :: BeamSqlBackend be => QGenExpr ctxt be s a
+-- See #744 for issues with `default_`.
 default_ = QExpr (pure defaultE)
 
 -- * Window functions

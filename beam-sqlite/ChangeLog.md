@@ -1,17 +1,51 @@
+# 0.5.5.0
+
+## Added features
+
+* `runInsertReturningList` now uses SQLite's relatively new `RETURNING` clause.
+
+## Bux fixes
+
+* Fixed an issue where values inserted with conflicts did not return then when using `runInsertReturningList` (#774) 
+
+## Updated dependencies
+
+* Updated the lower bound of `direct-sqlite` to `2.3.27`.
+* Updated the upper bound on `time` to include `time-1.14`.
+
+# 0.5.4.1
+
+## Dependencies
+
+* Ensure that beam-sqlite uses sqlite-3.24+, which is the minimum supported version (#589).
+
+# 0.5.4.0
+
+## Added features
+
+ * Removed the reliance on either the `unix` or `windows` package, which should enable (#738)
+   `beam-sqlite` to be buildable on a wider variety of platforms.
+
+# 0.5.3.1
+
+## Added features
+
+ * Replaced use of deprecated functions.
+
 # 0.5.3.0
 
-# Added features
+## Added features
 
  * Loosen some version bounds
  * `HasSqlEqualityCheck` instance for `Day`
 
 # 0.5.2.0
 
-# Bug fixes
+## Bug fixes
 
  * Fix encoding for `UTCTime`
 
-# Addded features
+## Addded features
 
  * `IN (SELECT ...)` syntax via `inQuery_`
 

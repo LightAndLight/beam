@@ -1,17 +1,61 @@
+# 0.5.4.4
+
+## Added features
+
+* Added the array functions `arrayAppend_`, `arrayPrepend_`, `arrayRemove_`, `arrayReplace_`, `arrayShuffle_`, `arraySample_`, `arrayToString_`, and `arrayToStringWithNull_` (#770)
+
+## Updated dependencies
+
+* Updated the upper bound on `time` to include `time-1.14`
+
+# 0.5.4.3
+
+## Added features
+
+ * Added `pgSelectWith`, a combinator like `selectWith` which allows to nest common table expressions in subqueries (#720).
+
+## Bug fixes
+
+ * Added the ability to migrate Postgres' array types (#354).
+ * Remove dependency on `haskell-src-exts`, which was not in use anymore.
+
+# 0.5.4.2
+
+## Bug fixes
+
+ * Fixed an issue where columns of type `Maybe (Vector a)` did not marshall correctly from the database. In particular, querying a `Nothing` would return `Just (Vector.fromList [])` instead (#692).
+
+# 0.5.4.1
+
+## Bug fixes
+
+ * Fixed an issue where inexact numeric literals (e.g. Haskell type `Double`) were implicitly converted to Postgres `NUMERIC`, triggering a runtime conversion error (#700).
+
+# 0.5.4.0
+
+## Added features
+
+ * Better error messages on column type mismatches (#696).
+ * Added support for creating and dropping database schemas and associated tables with `createDatabaseSchema`, `dropDatabaseSchema`, and `createTableWithSchema` (#716).
+
+## Documentation
+
+ * Make `runBeamPostgres` and `runBeamPostgresDebug` easier to find (#663).
+
 # 0.5.3.1
 
-# Added features
+## Added features
 
  * Loosen some version bounds
 
 # 0.5.3.0
 
-# Bug fixes
+## Bug fixes
 
  * Make sure lateral join names do not overlap
  * Fix `bool_or`
 
-# Addded features
+## Addded features
 
  * Add `runSelectReturningFirst`
  * `IN (SELECT ...)` syntax via `inQuery_`

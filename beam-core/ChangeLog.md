@@ -1,17 +1,66 @@
+# Unreleased
+
+## Updated dependencies
+
+* Updated the upper bound on `time` to include `time-1.14`
+
+# 0.10.4.0
+
+## Added features
+
+* Added a `Generic` instance to `SqlNull`, `SqlBitString`, and `SqlSerial` (#736).
+* Added a note to `default_` to specify that it has more restrictions than its type may indicate (#744).
+* Added `limitMaybe_` and `offsetMaybe_` (#633).
+
+## Updated dependencies
+
+* Updated the upper bound to include `containers-0.8`.
+
+# 0.10.3.1
+
+## Updated dependencies
+
+* Updated the upper bound to include `hashable-1.5`.
+
+## Bug fixes
+
+* The `Pagila` example in `beam-postgres` has been updated to compile using the most recent version of `beam` packages (#729).
+
+## Packaging
+
+* Remove the GHC flag `-O3`, which resulted in increased compilation time by default. This flag can still be activated using your build system of choice, as with every library.
+
+# 0.10.3.0
+
+## Added features
+
+* Export generic classes (#585).
+
+## Bug fixes
+
+ * Fixed an issue where a WHERE clause would be dropped in the absence of a FROM (#695).
+
+# 0.10.2.0
+
+## Added features
+
+ * Added support for creating database schemas and associated tables with `createDatabaseSchema`, `createTableWithSchema`, and `existingDatabaseSchema` (#716).
+ * Added `FromBackendRow` instance for `Identity` (#717).
+
 # 0.10.1.0
 
-# Added features
+## Added features
 
  * Allow embedding database types
  * Loosen some version bounds
 
 # 0.10.0.0
 
-# Bug fixes
+## Bug fixes
 
  * Make sure lateral join names do not overlap
 
-# Addded features
+## Addded features
 
  * Add `runSelectReturningFirst`
  * `IN (SELECT ...)` syntax via `inQuery_`

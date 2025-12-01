@@ -1,15 +1,106 @@
-name: "Build"
+name: Build
+
 on:
-  pull_request:
   push:
+    paths-ignore:
+      - 'docs/*/**'
+    branches: [master]
+  pull_request:
+
 jobs:
-  tests:
+  continuous-integration:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ghc-version: "8.10.7"
+            cabal-flags: ""
+          - ghc-version: "9.0.2"
+            cabal-flags: ""
+          - ghc-version: "9.2.8"
+            cabal-flags: ""
+          - ghc-version: "9.4.5"
+            cabal-flags: ""
+          - ghc-version: "9.6.4"
+            cabal-flags: ""
+          - ghc-version: "9.8.2"
+            cabal-flags: ""
+          - ghc-version: "9.10.1"
+            cabal-flags: ""
+          # Temporary cabal flags until all dependencies are updated
+          - ghc-version: "9.12.1"
+            cabal-flags: "--allow-newer=base --allow-newer=template-haskell --allow-newer=ghc-prim"
+
     steps:
-    - uses: actions/checkout@v2
-    - uses: cachix/install-nix-action@v21
-    - uses: cachix/cachix-action@v12
+    - uses: actions/checkout@v4
+
+    - name: Install cabal/ghc
+      uses: haskell-actions/setup@v2
+      id: setup-haskell
       with:
-        name: beam-ci
-        signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-    - run: nix-build release.nix
+        ghc-version: ${{ matrix.ghc-version }}
+        cabal-version: '3.12.1.0'
+
+    - name: Generate freeze file
+      run: |
+        cabal update
+        cabal configure --disable-optimization --enable-tests
+        cabal freeze ${{matrix.cabal-flags}}
+
+        # Exclude the timestamp of Hackage index update from our cache key, to
+        # avoid invalidating cache too often.
+        # This idea comes from github.com/jaspervdj/hakyll
+        sed '/^index-state: /d' cabal.project.freeze > dependencies-versions
+
+    - name: Cache cabal work
+      uses: actions/cache@v4
+      with:
+        path: |
+          dist-newstyle
+          ${{ steps.setup-haskell.outputs.cabal-store }}
+        key: ${{ runner.os }}-${{ hashFiles('dependencies-versions', 'cabal.project.local') }}-cabal-install
+
+    - name: Build dependencies
+      run: |
+        cabal build all --only-dependencies ${{matrix.cabal-flags}}
+
+    - name: Build beam packages
+      run: |
+        cabal build all ${{matrix.cabal-flags}}
+
+    - name: Run tests
+      run: |
+        cabal test all ${{matrix.cabal-flags}}
+
+  release-artifacts:
+    # Only build release artifacts if `continuous-integration` is successful
+    needs: [continuous-integration]
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check packages for common mistakes
+      run: |
+          for pkg in $(find . -mindepth 1 -maxdepth 1 -type d  -name "beam-*")
+          do
+              cd $pkg
+              echo "Checking $pkg"
+              cabal check
+              cd $GITHUB_WORKSPACE
+          done
+
+    # Note that the ubuntu-24.04 image includes cabal
+    # https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md#haskell-tools
+    - name: Build release artifacts
+      run : |
+        cabal sdist all
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      if: github.ref == 'refs/heads/master'
+      with:
+        name: ${{ runner.os }}-release-artifact
+        path: dist-newstyle/sdist/beam-*
+        retention-days: 7

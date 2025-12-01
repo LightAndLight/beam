@@ -25,7 +25,8 @@ module Database.Beam.Migrate.Serialization
        , BeamDeserializers(..)
 
        , beamDeserialize, beamDeserializeMaybe
-       , beamDeserializer, sql92Deserializers
+       , beamDeserializer, beamDeserializeJSON
+       , sql92Deserializers
        , sql99DataTypeDeserializers
        , sql2003BinaryAndVarBinaryDataTypeDeserializers
        , sql2008BigIntDataTypeDeserializers
@@ -48,9 +49,6 @@ import qualified Data.GADT.Compare as D
 import           Data.Text (Text, unpack)
 import           Data.Typeable (Typeable, (:~:)( Refl ), eqT, typeRep, typeOf)
 import qualified Data.Vector as V
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
 
 -- * Serialization helpers
 
@@ -219,6 +217,17 @@ beamSerializeJSON backend v =
   object [ "be-specific" .= backend
          , "be-data" .= v ]
 
+-- | Corresponding deserializer for 'beamSerializeJSON'
+--
+-- @since 0.5.3.2
+beamDeserializeJSON :: Text -> (Value -> Parser a) -> Value -> Parser a
+beamDeserializeJSON backend go =
+  withObject "backend-specific item" $ \v -> do
+    be <- v .: "be-specific"
+    guard (be == backend)
+    d <- v .: "be-data"
+    go d
+
 -- | Helper for serializing the precision and decimal count parameters to
 -- 'decimalType', etc.
 serializePrecAndDecimal :: Maybe (Word, Maybe Word) -> Value
@@ -246,21 +255,19 @@ newtype BeamDeserializers be
   }
 
 instance Semigroup (BeamDeserializer be) where
-  (<>) = mappend
-
-instance Monoid (BeamDeserializer be) where
-  mempty = BeamDeserializer (const (const mzero))
-  mappend (BeamDeserializer a) (BeamDeserializer b) =
+  (BeamDeserializer a) <> (BeamDeserializer b) =
     BeamDeserializer $ \d o ->
     a d o <|> b d o
 
+instance Monoid (BeamDeserializer be) where
+  mempty = BeamDeserializer (const (const mzero))
+
 instance Semigroup (BeamDeserializers be) where
-  (<>) = mappend
+  (BeamDeserializers a) <> (BeamDeserializers b) =
+    BeamDeserializers (D.unionWithKey (const mappend) a b)
 
 instance Monoid (BeamDeserializers be) where
   mempty = BeamDeserializers mempty
-  mappend (BeamDeserializers a) (BeamDeserializers b) =
-    BeamDeserializers (D.unionWithKey (const mappend) a b)
 
 -- | Helper function to deserialize data from a 'Maybe' 'Value'.
 --

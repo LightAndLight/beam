@@ -81,6 +81,9 @@ module Database.Beam.Postgres.PgSpecific
   , arrayUpper_, arrayLower_
   , arrayUpperUnsafe_, arrayLowerUnsafe_
   , arrayLength_, arrayLengthUnsafe_
+  , arrayAppend_, arrayPrepend_, arrayRemove_
+  , arrayReplace_, arrayShuffle_, arraySample_
+  , arrayToString_, arrayToStringWithNull_
 
   , isSupersetOf_, isSubsetOf_
 
@@ -141,6 +144,7 @@ import           Data.Foldable
 import           Data.Functor
 import           Data.Hashable
 import           Data.Int
+import           Data.Kind (Type)
 import qualified Data.List.NonEmpty as NE
 import           Data.Proxy
 import           Data.Scientific (Scientific, formatScientific, FPFormat(Fixed))
@@ -149,9 +153,6 @@ import qualified Data.Text as T
 import           Data.Time (LocalTime, NominalDiffTime)
 import           Data.Type.Bool
 import qualified Data.Vector as V
-#if !MIN_VERSION_base(4, 11, 0)
-import           Data.Semigroup
-#endif
 
 import qualified Database.PostgreSQL.Simple.FromField as Pg
 import qualified Database.PostgreSQL.Simple.ToField as Pg
@@ -160,6 +161,7 @@ import qualified Database.PostgreSQL.Simple.Range as Pg
 
 import           GHC.TypeLits
 import           GHC.Exts hiding (toList)
+import           Data.Text (Text)
 
 -- ** Postgres-specific functions
 
@@ -308,10 +310,10 @@ arrayDims_ :: BeamSqlBackendIsString Postgres text
            -> QGenExpr context Postgres s text
 arrayDims_ (QExpr v) = QExpr (fmap (\(PgExpressionSyntax v') -> PgExpressionSyntax (emit "array_dims(" <> v' <> emit ")")) v)
 
-type family CountDims (v :: *) :: Nat where
+type family CountDims (v :: Type) :: Nat where
   CountDims (V.Vector a) = 1 + CountDims a
   CountDims a = 0
-type family WithinBounds (dim :: Nat) (v :: *) :: Constraint where
+type family WithinBounds (dim :: Nat) (v :: Type) :: Constraint where
   WithinBounds dim v =
     If ((dim <=? CountDims v) && (1 <=? dim))
        (() :: Constraint)
@@ -412,6 +414,165 @@ isSubsetOf_ (QExpr needles) (QExpr haystack) =
 QExpr a ++. QExpr b =
   QExpr (pgBinOp "||" <$> a <*> b)
 
+-- | Postgres array_append(value) function.
+--
+-- Appends an element to the end of an array. Equivalent to the
+-- @anycompatiblearray || anycompatible@ operator.
+--
+-- Notes:
+-- - The array must be empty or one-dimensional (per Postgres rules for
+--   concatenating an element with an array).
+-- - If the array is NULL, the result is NULL. If the element is NULL,
+--   a NULL element is appended.
+--
+-- @since 0.5.4.4
+arrayAppend_
+  :: QGenExpr ctxt Postgres s (V.Vector a)
+  -> QGenExpr ctxt Postgres s a
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+arrayAppend_ (QExpr arr) (QExpr el) =
+  QExpr (PgExpressionSyntax . mappend (emit "array_append") . pgParens . mconcat <$> sequenceA
+    [ fromPgExpression <$> arr
+    , pure (emit ", ")
+    , fromPgExpression <$> el
+    ])
+
+-- | Postgres array_prepend(value) function.
+--
+-- Prepends an element to the beginning of an array. Equivalent to the
+-- @anycompatible || anycompatiblearray@ operator.
+--
+-- Notes:
+-- - The array must be empty or one-dimensional.
+-- - If the array is NULL, the result is NULL. If the element is NULL,
+--   a NULL element is prepended.
+--
+-- @since 0.5.4.4
+arrayPrepend_
+  :: QGenExpr ctxt Postgres s a
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+arrayPrepend_ (QExpr el) (QExpr arr) =
+  QExpr (PgExpressionSyntax . mappend (emit "array_prepend") . pgParens . mconcat <$> sequenceA
+    [ fromPgExpression <$> el
+    , pure (emit ", ")
+    , fromPgExpression <$> arr
+    ])
+
+-- | Postgres array_remove(value) function.
+--
+-- Removes all elements equal to the given value from the array.
+-- Comparisons use @IS NOT DISTINCT FROM@ semantics, so this can remove NULLs.
+--
+-- Notes:
+-- - The array must be one-dimensional.
+-- - Returns NULL only if the array is NULL; if the value is not present,
+--   the original array is returned unchanged.
+--
+-- @since 0.5.4.4
+arrayRemove_
+  :: QGenExpr ctxt Postgres s (V.Vector a)
+  -> QGenExpr ctxt Postgres s a
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+arrayRemove_ (QExpr arr) (QExpr el) =
+  QExpr (PgExpressionSyntax . mappend (emit "array_remove") . pgParens . mconcat <$> sequenceA
+    [ fromPgExpression <$> arr
+    , pure (emit ", ")
+    , fromPgExpression <$> el
+    ])
+
+-- | Postgres array_replace(array, from, to) function.
+--
+-- Replaces each element equal to the second argument with the third.
+--
+-- Notes:
+-- - Comparisons use IS NOT DISTINCT FROM semantics; can replace NULLs.
+-- - The array must be one-dimensional.
+--
+-- Example:
+--
+-- @
+-- select_ $ pure $ arrayReplace_ (val_ $ V.fromList [1::Int32,2,5,4]) (val_ 5) (val_ 3)
+-- -- => {1,2,3,4}
+-- @
+--
+-- @since 0.5.4.4
+arrayReplace_
+  :: QGenExpr ctxt Postgres s (V.Vector a) -- ^ The array to operate on
+  -> QGenExpr ctxt Postgres s a             -- ^ The value to be replaced
+  -> QGenExpr ctxt Postgres s a             -- ^ The new value
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+arrayReplace_ (QExpr arr) (QExpr fromVal) (QExpr toVal) =
+  QExpr (PgExpressionSyntax . mappend (emit "array_replace") . pgParens . mconcat <$> sequenceA
+    [ fromPgExpression <$> arr
+    , pure (emit ", ")
+    , fromPgExpression <$> fromVal
+    , pure (emit ", ")
+    , fromPgExpression <$> toVal
+    ])
+
+-- | Postgres array_shuffle(array) function.
+-- Randomly shuffles the first dimension.
+--
+-- @since 0.5.4.4
+arrayShuffle_
+  :: QGenExpr ctxt Postgres s (V.Vector a)
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+arrayShuffle_ (QExpr arr) =
+  QExpr (PgExpressionSyntax . mappend (emit "array_shuffle") . pgParens . fromPgExpression <$> arr)
+
+-- | Postgres array_sample(array, n) function.
+-- Randomly selects @n@ items from the array. For multidimensional arrays,
+-- an "item" is a slice with a given first subscript.
+--
+-- Precondition: @n@ must not exceed the length of the first dimension.
+--   If n is negative, it will be treated as 0.
+--
+-- @since 0.5.4.4
+arraySample_
+  :: Integral n
+  => QGenExpr ctxt Postgres s (V.Vector a)  -- ^ The source array
+  -> QGenExpr ctxt Postgres s n             -- ^ Number of elements to sample (negative values treated as 0)
+  -> QGenExpr ctxt Postgres s (V.Vector a)
+arraySample_ (QExpr arr) (QExpr n) =
+  QExpr (PgExpressionSyntax . mappend (emit "array_sample") . pgParens . mconcat <$> sequenceA
+    [ fromPgExpression <$> arr
+    , pure (emit ", greatest(0, ")
+    , fromPgExpression <$> n
+    , pure (emit ")")
+    ])
+
+-- | Postgres array_to_string(array, delimiter) function.
+-- Converts each element to text and joins with the delimiter. NULLs are omitted.
+--
+-- @since 0.5.4.4
+arrayToString_
+  :: QGenExpr ctxt Postgres s (V.Vector a)
+  -> QGenExpr ctxt Postgres s Text
+  -> QGenExpr ctxt Postgres s Text
+arrayToString_ (QExpr arr) (QExpr delim) =
+  QExpr (PgExpressionSyntax <$> do
+    arrExpr <- fromPgExpression <$> arr
+    delimExpr <- fromPgExpression <$> delim
+    pure $ emit "array_to_string" <> pgParens (arrExpr <> emit ", " <> delimExpr))
+
+-- | Postgres array_to_string(array, delimiter, null_string) function.
+-- Converts each element to text and joins with the delimiter. NULLs are
+-- represented by the provided @null_string@.
+--
+-- @since 0.5.4.4
+arrayToStringWithNull_
+  :: QGenExpr ctxt Postgres s (V.Vector a)
+  -> QGenExpr ctxt Postgres s Text
+  -> QGenExpr ctxt Postgres s Text
+  -> QGenExpr ctxt Postgres s Text
+arrayToStringWithNull_ (QExpr arr) (QExpr delim) (QExpr nullStr) =
+  QExpr (PgExpressionSyntax <$> do
+    arrExpr <- fromPgExpression <$> arr
+    delimExpr <- fromPgExpression <$> delim
+    nullStrExpr <- fromPgExpression <$> nullStr
+    pure $ emit "array_to_string" <>
+      pgParens (mconcat [arrExpr, emit ", ", delimExpr, emit ", ", nullStrExpr]))
 -- ** Array expressions
 
 -- | An expression context that determines which types of expressions can be put
@@ -486,7 +647,7 @@ unbounded = PgRangeBound Exclusive Nothing
 --
 -- A reasonable example might be @Range PgInt8Range Int64@.
 -- This represents a range of Haskell @Int64@ values stored as a range of 'bigint' in Postgres.
-data PgRange (n :: *) a
+data PgRange (n :: Type) a
   = PgEmptyRange
   | PgRange (PgRangeBound a) (PgRangeBound a)
   deriving (Eq, Show, Generic)
@@ -789,7 +950,7 @@ instance Beamable (PgJSONElement a)
 -- section on
 -- <https://www.postgresql.org/docs/current/static/functions-json.html JSON>.
 --
-class IsPgJSON (json :: * -> *) where
+class IsPgJSON (json :: Type -> Type) where
   -- | The @json_each@ or @jsonb_each@ function. Values returned as @json@ or
   -- @jsonb@ respectively. Use 'pgUnnest' to join against the result
   pgJsonEach     :: QGenExpr ctxt Postgres s (json a)
@@ -1392,7 +1553,7 @@ pgRegexpSplitToTable (QExpr s) (QExpr re) =
 
 -- ** Set-valued functions
 
-data PgSetOf (tbl :: (* -> *) -> *)
+data PgSetOf (tbl :: (Type -> Type) -> Type)
 
 pgUnnest' :: forall tbl db s
            . Beamable tbl

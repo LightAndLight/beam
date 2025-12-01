@@ -12,7 +12,7 @@ import Database.Beam.Test.Schema hiding (tests)
 import Database.Beam
 import Database.Beam.Backend.SQL (MockSqlBackend)
 import Database.Beam.Backend.SQL.AST
-
+import Data.Kind (Type)
 import Data.Int
 import Data.Time.Clock
 import Data.Text (Text)
@@ -24,6 +24,7 @@ tests :: TestTree
 tests = testGroup "SQL generation tests"
                   [ simpleSelect
                   , simpleWhere
+                  , simpleWhereNoFrom
                   , simpleJoin
                   , selfJoin
                   , leftJoin
@@ -117,6 +118,32 @@ simpleWhere =
          nameCond = ExpressionCompOp "==" Nothing (ExpressionFieldName (QualifiedField employees "first_name")) (ExpressionFieldName (QualifiedField employees "last_name"))
 
      selectWhere @?= Just (ExpressionBinOp "AND" salaryCond (ExpressionBinOp "AND" ageCond nameCond))
+
+-- | Simple select without FROM clause (#667)
+
+data EmptyDb (f :: Type -> Type) = EmptyDb
+
+simpleWhereNoFrom :: TestTree
+simpleWhereNoFrom =
+  testCase "WHERE clause not dropped if there is no FROM" $ do
+    SqlSelect Select { selectTable = SelectTable { .. }, .. } <- pure $ selectMock simple
+    
+    selectGrouping @?= Nothing
+    selectOrdering @?= []
+    selectLimit @?= Nothing
+    selectOffset @?= Nothing
+    selectHaving @?= Nothing
+    selectQuantifier @?= Nothing
+    -- Important point: no FROM clause, yet WHERE clause should still be here
+    selectFrom @?= Nothing
+    selectWhere @?= (Just (ExpressionValue (Value False)))
+  
+  where
+    simple :: Q (MockSqlBackend Command) EmptyDb s (QExpr (MockSqlBackend Command) s Bool)
+    simple = do
+      guard_ (val_ False)
+      pure (val_ True)
+
 
 -- | Ensure that multiple tables are correctly joined
 
@@ -1032,7 +1059,9 @@ selectCombinators =
 limitOffset :: TestTree
 limitOffset =
   testGroup "LIMIT/OFFSET support"
-  [ limitSupport, offsetSupport, limitOffsetSupport
+  [ limitSupport, maybeLimitSupportJust, maybeLimitSupportNothing
+  , offsetSupport, maybeOffsetSupportJust, maybeOffsetSupportNothing
+  , limitOffsetSupport
 
   , limitPlacedOnUnion ]
   where
@@ -1044,6 +1073,22 @@ limitOffset =
          selectLimit @?= Just 20
          selectOffset @?= Nothing
 
+    maybeLimitSupportJust =
+      testCase "Maybe LIMIT support (Just)" $
+      do SqlSelect Select { selectLimit, selectOffset } <-
+           pure $ selectMock $ limitMaybe_ (Just 20) (all_ (_employees employeeDbSettings))
+
+         selectLimit @?= Just 20
+         selectOffset @?= Nothing
+
+    maybeLimitSupportNothing =
+      testCase "Maybe LIMIT support (Nothing)" $
+      do SqlSelect Select { selectLimit, selectOffset } <-
+           pure $ selectMock $ limitMaybe_ Nothing (all_ (_employees employeeDbSettings))
+
+         selectLimit @?= Nothing
+         selectOffset @?= Nothing
+
     offsetSupport =
       testCase "Basic OFFSET support" $
       do SqlSelect Select { selectLimit, selectOffset } <-
@@ -1051,6 +1096,22 @@ limitOffset =
 
          selectLimit @?= Nothing
          selectOffset @?= Just 102
+
+    maybeOffsetSupportJust =
+      testCase "Maybe OFFSET support (Just)" $
+      do SqlSelect Select { selectLimit, selectOffset } <-
+           pure $ selectMock $ offsetMaybe_ (Just 2) $ offset_ 100 (all_ (_employees employeeDbSettings))
+
+         selectLimit @?= Nothing
+         selectOffset @?= Just 102
+
+    maybeOffsetSupportNothing =
+      testCase "Maybe OFFSET support (Nothing)" $
+      do SqlSelect Select { selectLimit, selectOffset } <-
+           pure $ selectMock $ offsetMaybe_ Nothing $ offset_ 100 (all_ (_employees employeeDbSettings))
+
+         selectLimit @?= Nothing
+         selectOffset @?= Just 100
 
     limitOffsetSupport =
       testCase "Basic LIMIT .. OFFSET .. support" $
