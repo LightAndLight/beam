@@ -29,7 +29,7 @@ module Database.Beam.Postgres.Trans.Internal
   , fromPg
   ) where
 
-import           Control.Exception (SomeException(..), throwIO, try)
+import           Control.Exception (fromException, throwIO, try)
 import           Control.Monad.Base (MonadBase(..))
 import           Control.Monad.Free.Church
 import           Control.Monad.IO.Class
@@ -70,7 +70,6 @@ import           Data.Maybe (listToMaybe, fromMaybe)
 import           Data.String
 import qualified Data.Text as Text
 import           Data.Text.Encoding (encodeUtf8)
-import           Data.Typeable (cast)
 #if !MIN_VERSION_base(4, 11, 0)
 import           Data.Semigroup
 #endif
@@ -150,8 +149,8 @@ runPgRowReader conn rowIdx res fields (FromBackendRowM readRow) =
            Pg.Errors errs ->
              let err = fromMaybe (ColumnErrorInternal "Column parse failed with unknown exception") $
                        listToMaybe $
-                       do SomeException e <- errs
-                          Just pgErr <- pure (cast e)
+                       do e <- errs
+                          Just pgErr <- pure (fromException @Pg.ResultError e)
                           case pgErr of
                             Pg.ConversionFailed { Pg.errSQLType = sql
                                                 , Pg.errHaskellType = hs
